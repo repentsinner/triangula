@@ -1,37 +1,43 @@
-__author__ = 'Tom Oinn'
+"""
+Fix Onshape's busted DXF output.
+Entities with negative extrusion direction are mirrored back to positive direction
+
+Tested with Python 3.5.1
+"""
+# pylint: disable=C0103
 
 import sys
 import getopt
-# Get ezdxf with 'pip install ezdxf', tested with Python2.7
+# Get ezdxf with 'pip install ezdxf'
 import ezdxf
 
+__author__ = 'Tom Oinn'
 
-def mirror_coord(c):
+def mirror_coord(coord):
     """
-    If Z coordinate of c is less than zero, return mirrored around Y axis
+    return coordinate mirrored around Y axis
 
     :param c:
         a coordinate (x,y,z)
 
     :returns:
-        A flattened (Z set to 0) and optionally mirrored, copy of the input
+        A flattened (Z set to -Z) and mirrored about Y (X set to -X) copy of the input
     """
-    (x, y, z) = c
-    return (-x, y, 0)
+    return (-coord[0], coord[1], -coord[2])
 
-def mirror(a):
+def mirror_angle(angle):
     """
-    Return angle mirrored around 180 degrees
+    Return angle rotated 180 degrees
     """
-    a = 180 - a
-    if a < 0:
-        a += 360
-    return a
-
+    return (180 - angle) % 360
 
 def main(inputfile, outputfile):
     """
-    Mirror all CIRCLE and ARC entities if their centre coordinates are negative in Z axis
+    Mirror all CIRCLE, ARC, and LINE entities if their extrusion direction is negative
+
+    Mirror CIRCLE centers
+    Mirror ARC centers and angles
+    Mirrow LINE start and end (not seen in the wild yet)
 
     :param inputfile:
         Name of a DXF file to read
@@ -39,18 +45,37 @@ def main(inputfile, outputfile):
         Name of a DXF file to write
     """
     dwg = ezdxf.readfile(inputfile)
-    for e in dwg.entities:
-        (x,y,z) = e.dxf.extrusion
-        if z < 0:
-            if e.dxftype() == 'CIRCLE':
-                e.dxf.center = mirror_coord(e.dxf.center)
-            elif e.dxftype() == 'ARC':
-                start_angle = e.dxf.start_angle
-                end_angle = e.dxf.end_angle
-                e.dxf.start_angle = mirror(end_angle)
-                e.dxf.end_angle = mirror(start_angle)
-                e.dxf.center = mirror_coord(e.dxf.center)
-        e.dxf.extrusion = (0,0,1.0)
+
+    for entity in dwg.entities:
+        if entity.dxf.extrusion[2] < 0:
+            if entity.dxftype() == 'CIRCLE':
+                entity.dxf.center = mirror_coord(entity.dxf.center)
+            elif entity.dxftype() == 'ARC':
+                start_angle = entity.dxf.start_angle
+                end_angle = entity.dxf.end_angle
+                entity.dxf.start_angle = mirror_angle(end_angle)
+                entity.dxf.end_angle = mirror_angle(start_angle)
+                entity.dxf.center = mirror_coord(entity.dxf.center)
+            elif entity.dxftype() == 'LINE':
+                entity.dxf.start = mirror_coord(entity.dxf.end)
+                entity.dxf.end = mirror_coord(entity.dxf.start)
+            else:
+                print('{0:6} {1}: type not processed!'.format(entity.dxftype(), entity.dxf.handle))
+
+            # fix extrusion direction for all processed entities
+            entity.dxf.extrusion = (0, 0, 1.0)
+
+    # check for non-planar in Z
+    z = []
+    for entity in dwg.entities:
+        if entity.dxftype() == 'CIRCLE' or entity.dxftype() == 'ARC':
+            z.append(entity.dxf.center[2])
+        if entity.dxftype() == 'LINE':
+            z.append(entity.dxf.start[2])
+            z.append(entity.dxf.end[2])
+    if len(set(z)) > 1:
+        print('WARNING: Not all elements in same Z plane! ' + repr(set(z)))
+
     dwg.saveas(outputfile)
 
 
@@ -62,7 +87,7 @@ if __name__ == '__main__':
     try:
         opts, args = getopt.getopt(sys.argv[1:], 'i:o:', ['ifile=', 'ofile='])
     except getopt.GetoptError:
-        print USAGE_MESSAGE
+        print(USAGE_MESSAGE)
         sys.exit(2)
     for opt, arg in opts:
         if opt in ("-i", "--ifile"):
